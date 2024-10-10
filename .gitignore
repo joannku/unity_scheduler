@@ -3,4 +3,3 @@ data/
 logs/
 admin/
 o365_token.txt
-src/__pycache__/
