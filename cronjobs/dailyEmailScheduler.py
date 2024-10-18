@@ -38,6 +38,8 @@ if __name__ == "__main__":
 
     except Exception as e:
         print(f"An error occurred: {e}, {e.with_traceback(None)}")
+        # which function is raising the error
+        print(f"Error in line: {sys.exc_info()[-1].tb_lineno}")
 
     # Stop redirecting stdout and close the log files
     sys.stdout = sys.__stdout__  # Restore stdout to console

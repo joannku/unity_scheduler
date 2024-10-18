@@ -68,6 +68,7 @@ def register_participant(config):
 
         # Participant Information
         participant_dict["ParticipantID"] = st.text_input("Participant ID")
+        participant_dict["Active"] = st.selectbox("Active", ['True', 'False'])
         participant_dict["FirstName"] = st.text_input("First Name")
         participant_dict["LastName"] = st.text_input("Last Name")
         participant_dict["Email"] = st.text_input("Email")
@@ -367,7 +368,7 @@ def edit_email_templates():
         st.session_state['templates'] = pd.concat([dfx, empty_row], ignore_index=True)
         
         # Refresh the editor display by re-rendering it
-        st.experimental_rerun()
+        st.rerun()
 
     # Show a button to view the edited version
     view_button = st.button("View edited version")

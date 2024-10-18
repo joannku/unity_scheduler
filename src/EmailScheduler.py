@@ -278,7 +278,14 @@ class Scheduler:
             participant_row = self.df_vs_l.loc[self.df_vs_l['ParticipantID'] == pid]
             existing_email_codes = self.df_es_l[self.df_es_l['ParticipantID'] == pid]['EmailCode'].tolist()
 
+            participant_arm = participant_row['Arm'].values[0]
+
             for email_code, info in email_templates.items():
+                if '-' in email_code:
+                    suffix = email_code.split('-')[-1]
+                    if (suffix == 'HA' and participant_arm != 'Healthy Arm') or \
+                        (suffix == 'AA' and participant_arm != 'Alcohol Arm'):
+                        continue
                 if email_code not in existing_email_codes:
                     rows_to_add.append({
                         'ParticipantID': pid,
@@ -308,12 +315,19 @@ class Scheduler:
         
         rows_to_add = []
         for pid in participants:
+            participant_arm = self.df_vs_l.loc[self.df_vs_l['ParticipantID'] == pid]['Arm'].values[0]
             # Retrieve the list of existing email codes scheduled for this participant
             existing_email_codes = self.df_es_l[self.df_es_l['ParticipantID'] == pid]['EmailCode'].tolist()
             print(f"    Participant {pid} has the following existing EmailCodes: {existing_email_codes}")
             # Check if any email templates are missing in the existing schedule
             for email_code, info in email_templates.items():                
                 if email_code not in existing_email_codes:
+                    if '-' in email_code:
+                        suffix = email_code.split('-')[-1]
+                        if (suffix == 'HA' and participant_arm != 'Healthy Arm') or \
+                            (suffix == 'AA' and participant_arm != 'Alcohol Arm'):
+                            print(f"      * Skipping email code {email_code} for participant {pid} in arm {participant_arm}.")
+                            continue
                     # Add only if the email is not already scheduled
                     print(f"    EmailCode {email_code} is missing for Participant {pid}. Adding to schedule.")
                     scheduled_date = self.calculate_scheduled_date(pid, info['VisitNumber'], info['Offset'])
@@ -342,7 +356,11 @@ class Scheduler:
 
 
     def calculate_scheduled_date(self, pid, visit_code, offset):
-        visit_date = self.df_vs_s.loc[self.df_vs_s['ParticipantID'] == pid, f"{visit_code}_Date"].values[0]
+        if not visit_code == 'Signup':
+            visit_date = self.df_vs_s.loc[self.df_vs_s['ParticipantID'] == pid, f"{visit_code}_Date"].values[0]
+        else:
+            # today
+            visit_date = datetime.now().strftime('%Y-%m-%d')
         visit_date = datetime.strptime(visit_date, "%Y-%m-%d")       
         scheduled_date = visit_date + timedelta(days=offset)
         scheduled_date = scheduled_date.strftime("%Y-%m-%d")
@@ -379,6 +397,17 @@ class Scheduler:
             elif not self.df_el_l.loc[(self.df_el_l['ParticipantID'] == row['ParticipantID']) & (self.df_el_l['EmailCode'] == row['EmailCode'])].empty:
                 print(f"        Email {row['EmailCode']} for participant {row['ParticipantID']} was already sent. Skipping.")
             else:
+                # Verify arm-specific emails
+                participant_arm = self.df_vs_l.loc[self.df_vs_l['ParticipantID'] == row['ParticipantID'], 'Arm'].values[0]
+                print(f"Participant {row['ParticipantID']} arm: {participant_arm}")
+                if '-' in row['EmailCode']:
+                    print(f"    Email {row['EmailCode']} is arm-specific.")
+                    suffix = row['EmailCode'].split('-')[-1]
+                    if (suffix == 'HA' and participant_arm != 'Healthy Arm') or \
+                    (suffix == 'AA' and participant_arm != 'Alcohol Arm'):
+                        print(f"        Email {row['EmailCode']} does not match participant {row['ParticipantID']}'s arm. Skipping.")
+                        continue
+                
                 # Check if the participant already exists in the dictionary
                 if row['ParticipantID'] not in email_dict:
                     email_dict[row['ParticipantID']] = {}
@@ -391,7 +420,7 @@ class Scheduler:
                     'UpdatedAt': row['UpdatedAt'],
                     'Email': self.df_vs_l.loc[self.df_vs_l['ParticipantID'] == row['ParticipantID'], 'Email'].values[0],
                     'FirstName': self.df_vs_l.loc[self.df_vs_l['ParticipantID'] == row['ParticipantID'], 'FirstName'].values[0],
-                    'Surname': self.df_vs_l.loc[self.df_vs_l['ParticipantID'] == row['ParticipantID'], 'Surname'].values[0],
+                    'LastName': self.df_vs_l.loc[self.df_vs_l['ParticipantID'] == row['ParticipantID'], 'LastName'].values[0],
                     'Subject': self.df_et_l.loc[self.df_et_l['EmailCode'] == row['EmailCode'], 'Subject'].values[0],
                     'EmailBody': self.df_et_l.loc[self.df_et_l['EmailCode'] == row['EmailCode'], 'EmailBody'].values[0],
                     'V1_Date': self.df_vs_l.loc[self.df_vs_l['ParticipantID'] == row['ParticipantID'], 'V1_Date'].values[0],
@@ -445,7 +474,10 @@ class Scheduler:
     def format_calendar_event(self, email_data):
         # Find the corresponding visit number for the emal code
         visit_number = self.df_et_l.loc[self.df_et_l['EmailCode'] == email_data['EmailCode'], 'VisitNumber'].values[0]
-        visit_number = visit_number[-1]  # Only keep the last character
+        if visit_number != 'Signup':
+            visit_number = visit_number[-1]  # Only keep the last character
+        else: # If the email is a signup email, use the first visit
+            visit_number = 0
 
         subject = f"UNITY Visit {visit_number} for {email_data['ParticipantID']}"
         description = f"UNITY Visit {visit_number} for {email_data['ParticipantID']}"
@@ -475,7 +507,7 @@ class Scheduler:
     def send_email(self, pid, email_data):
 
         email_code = email_data['EmailCode']
-        subject = email_data['Subject']
+        subject = email_data['Subject'].format(**email_data)
         body = email_data['EmailBody']
         escaped_email_body = re.sub(r"{(?!\w)", "{{", body)
         escaped_email_body = re.sub(r"(?<=\W)}", "}}", escaped_email_body)
