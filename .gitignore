@@ -5,3 +5,6 @@ admin/
 o365_token.txt
 .venv
 *.txt
+.env
+__pycache__/
+src/unity_email_scheduler.egg-info
