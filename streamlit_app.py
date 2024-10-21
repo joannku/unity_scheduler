@@ -5,6 +5,9 @@ from dateutil.relativedelta import relativedelta
 import pandas as pd
 import os
 import subprocess
+from streamlit_calendar import calendar
+import numpy as np
+
 
 # Initialize session state
 if 'form_stage' not in st.session_state:
@@ -49,7 +52,8 @@ def main_menu():
         "Register new participant",
         "Edit email templates",
         "Participant lookup",
-        "View or edit CSVs"
+        "View or edit CSVs",
+        "View scheduled emails"
     ]
     with st.form("SelectTask"):
         st.session_state["Task"] = st.radio("What would you like to do today?", choices)
@@ -384,13 +388,20 @@ def edit_email_templates():
         st.write("Looking good? Click 'Save changes' to save the edited version.")
         check = st.checkbox("Please select this box to automatically generate new email schedule.")
         st.caption("Note: If you don't do it, it will happen at the next scheduled hour (10/15/21 daily).")
-        save_changes = st.button("Save changes")
+        st.session_state['view_mode'] = True
+        if st.session_state['view_mode']:
+            save_changes = st.button("Save changes")
         try:
             if save_changes:
-                st.session_state['templates'].to_csv('data/streamlit/3_email_templates.csv', index=False)
-                st.success("Changes have been saved successfully.")
-                # Reset the view mode after saving
-                st.session_state['view_mode'] = False
+                if st.session_state['view_mode'] == False:
+                    st.error("The changes have already been saved. Please refresh the page to make new changes.")
+                else: 
+                    # hide the button
+                    st.session_state['view_mode'] = False
+                    st.session_state['templates'].to_csv('data/streamlit/3_email_templates.csv', index=False)
+                    st.success("Changes have been saved successfully.")
+                    # Reset the view mode after saving
+                    st.session_state['view_mode'] = False
                 if check:
                     run_daily_email_scheduler()
         except Exception as e:
@@ -502,6 +513,105 @@ def view_or_edit_csvs():
                 else: 
                     st.error("Incorrect passcode. Please try again.")
 
+def view_scheduled_emails():
+    df = pd.read_csv('/data/jkuc/unity_scheduler/data/local/2_email_schedule.csv')
+    dfx = pd.read_csv('/data/jkuc/unity_scheduler/data/local/3_email_templates.csv')
+    dfv = pd.read_csv('/data/jkuc/unity_scheduler/data/local/1_visit_schedule.csv')
+    
+    participants = np.append(["Select all"], df['ParticipantID'].unique())
+    participant_id = st.selectbox('Participant ID', participants)
+    codes = np.append(['Select all'], df['EmailCode'].unique())
+    email_code = st.selectbox('Email Code', codes)
+
+    # Use session state to retain calendar events
+    if 'calendar_events' not in st.session_state:
+        st.session_state['calendar_events'] = []
+    if 'calendar_generated' not in st.session_state:
+        st.session_state['calendar_generated'] = False
+
+    search_button = st.button("Search")
+    if search_button:
+        st.write(f"Showing scheduled emails for Participant ID: {participant_id} and Email Code: {email_code}")
+        if participant_id == "Select all" and email_code == "Select all":
+            df_filtered = df
+            dfv_f = dfv
+        elif participant_id == "Select all" and email_code != "Select all":
+            df_filtered = (df[df['EmailCode'] == email_code])
+            dfv_f = dfv
+        elif participant_id != "Select all" and email_code == "Select all":
+            df_filtered = (df[df['ParticipantID'] == participant_id])
+            dfv_f = dfv[dfv['ParticipantID'] == participant_id]
+        else:
+            df_filtered = (df[(df['ParticipantID'] == participant_id) & (df['EmailCode'] == email_code)])
+            dfv_f = dfv[dfv['ParticipantID'] == participant_id]
+
+        st.dataframe(df_filtered, width=2000)
+
+        # Generate calendar events
+        calendar_options = {}    
+        calendar_events = []
+
+        # ParticipantID, EmailCode, ScheduledDate, UpdatedAt
+        for index, row in df_filtered.iterrows():
+            email_description = dfx[dfx['EmailCode'] == row['EmailCode']]['Description'].iloc[0]
+            calendar_event = {
+                "title": f"{row['EmailCode']}: {row['ParticipantID']}",
+                "start": row['ScheduledDate'],
+                "resourceId": {"id": row['ParticipantID'], "email_code": row['EmailCode'], "description": email_description},
+                "backgroundColor": "blue",
+            }
+            calendar_events.append(calendar_event)
+        
+        # Add visit schedule events
+        visit_dict = {}
+        for index, row in dfv_f.iterrows():
+            visit_dict[row['ParticipantID']] = {
+                "V1": {"date": row['V1_Date'], "time": row['V1_Time']},
+                "V2": {"date": row['V2_Date'], "time": row['V2_Time']},
+                "V3": {"date": row['V3_Date'], "time": row['V3_Time']},
+                "V4": {"date": row['V4_Date'], "time": row['V4_Time']},
+                "V5": {"date": row['V5_Date'], "time": row['V5_Time']},
+                "V6": {"date": row['V6_Date'], "time": row['V6_Time']},
+                "V7": {"date": row['V7_Date'], "time": row['V7_Time']},
+            }
+        
+        for pid, visit_data in visit_dict.items():
+            for visit, date_time in visit_data.items():
+                calendar_event = {
+                    "title": f"{visit}: {pid}",
+                    "start": f"{date_time['date']}T{date_time['time']}",
+                    "backgroundColor": "red",
+                }
+                calendar_events.append(calendar_event)
+
+        # Store events in session state
+        st.session_state['calendar_events'] = calendar_events
+        st.session_state['calendar_options'] = calendar_options
+        st.session_state['custom_css'] = """
+            .fc-event-past {
+                opacity: 0.5;
+            }
+            .fc-event-time {
+                font-style: italic;
+            }
+            .fc-event-title {
+                font-weight: 200; font-size: 0.7rem;
+            }
+            .fc-toolbar-title {
+                font-size: 1rem;
+            }
+        """
+        st.session_state['calendar_generated'] = True
+
+    # Render calendar if events are stored
+    if st.session_state.get('calendar_generated', False):
+        calendar_1 = calendar(
+            events=st.session_state['calendar_events'],
+            options=st.session_state['calendar_options'],
+            custom_css=st.session_state['custom_css']
+        )
+        st.write(calendar_1)
+
 # Main application
 def main():
     passcodes = 'admin/.passcodes.json'
@@ -527,6 +637,8 @@ def main():
         participant_lookup()
     if st.session_state['form_stage'] >= 3 and st.session_state["Task"] == "View or edit CSVs":
         view_or_edit_csvs()
+    if st.session_state['form_stage'] >= 3 and st.session_state["Task"] == "View scheduled emails":
+        view_scheduled_emails()
         
 
 if __name__ == '__main__':

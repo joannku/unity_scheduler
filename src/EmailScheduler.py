@@ -12,6 +12,8 @@ from O365 import Account, FileSystemTokenBackend, Message
 from oauth2client.service_account import ServiceAccountCredentials
 import time
 from OutlookEmailer import OutlookEmailer
+import traceback
+import sys
 
 
 class Scheduler:
@@ -171,22 +173,32 @@ class Scheduler:
             (suffix1, path1), (suffix2, path2) = pair
             filename = path1.split('/')[-1]
 
+            # Ensure both files exist
+            if not (os.path.exists(path1) and os.path.exists(path2)):
+                print(f"    Error: One of the files {path1} or {path2} does not exist.")
+                continue
+
             # Compare the files and capture changes
-            if filecmp.cmp(path1, path2, shallow=False):
-                print(f"    No updates in {filename}.")
-            else:
-                print(f"    ! Changes detected in {filename}.")
-                self.process_changes(filename, path1, path2)
-                if self.overwrite_local:
-                    shutil.copy2(path2, path1)
-                    print(f"    * Updated {filename}.")
-                
-                # If email templates have changed, update existing schedules
-                if filename == '3_email_templates.csv':
-                    self.update_existing_participants_schedule(self.get_email_templates())
+            try:
+                if filecmp.cmp(path1, path2, shallow=False):
+                    print(f"    No updates in {filename}.")
+                else:
+                    print(f"    ! Changes detected in {filename}.")
+                    self.process_changes(filename, path1, path2)
+                    if self.overwrite_local:
+                        shutil.copy2(path2, path1)
+                        print(f"    * Updated {filename}.")
+                    
+                    # If email templates have changed, update existing schedules
+                    if filename == '3_email_templates.csv':
+                        self.update_existing_participants_schedule(self.get_email_templates())
+
+            except Exception as e:
+                print(f"    Error comparing files {path1} and {path2}: {e}")
 
         print('    > Check for changes completed.')
         return changes_dict
+
 
 
     def get_email_templates(self):
@@ -214,16 +226,27 @@ class Scheduler:
     def process_visit_schedule_changes(self, filename, path1, path2):
         pids_needing_new_schedule = []
         
+        # Identify new participants by checking for ParticipantIDs in streamlit but not in local
+        new_participants = self.df_vs_s[~self.df_vs_s['ParticipantID'].isin(self.df_vs_l['ParticipantID'])]
+        
+        # If there are new participants, print and add them
+        if not new_participants.empty:
+            print("        New participants registered:", new_participants['ParticipantID'].tolist())
+            pids_needing_new_schedule.extend(new_participants['ParticipantID'].tolist())
+            
+            # Add new participants to the local DataFrame
+            self.df_vs_l = pd.concat([self.df_vs_l, new_participants], ignore_index=True)
+            # Save the updated local file
+            if self.overwrite_local:
+                self.df_vs_l.to_csv(self.paths['visit_schedule_local'], index=False)
+                print("        * Updated local visit schedule with new participants.")
+        
+        # Handle changes to existing participants (if needed)
         for index, row in self.df_vs_s.iterrows():
             pid = row['ParticipantID']
-
-            # NEW PARTICIPANT
-            if not pid in self.df_vs_l['ParticipantID'].values:
-                print("        New participant registered:", pid)
-                pids_needing_new_schedule.append(pid)
-
+            
             # CHANGES TO EXISTING PARTICIPANT
-            else:
+            if pid in self.df_vs_l['ParticipantID'].values:
                 row_l = self.df_vs_l[self.df_vs_l['ParticipantID'] == pid]
                 row_s = self.df_vs_s[self.df_vs_s['ParticipantID'] == pid]
                 if not row_l.equals(row_s):
@@ -233,6 +256,7 @@ class Scheduler:
         if pids_needing_new_schedule:
             print("    > Generating new email schedule for updated participants:", pids_needing_new_schedule)
             self.generate_email_schedule(pids_needing_new_schedule)
+
 
 
     def check_missing_schedule(self): 
@@ -448,7 +472,7 @@ class Scheduler:
         attachment = self.df_et_l.loc[self.df_et_l['EmailCode'] == email_code, 'Attachments'].values[0]
 
         # Check if the attachment is not None, 'None', or an empty string
-        if not pd.isna(attachment) and attachment not in ['False', False, 'None', 'none', 'NONE', '']:
+        if not pd.isna(attachment) and attachment not in ['False', False, 'None', 'none', 'NONE', '', 0, '0']:
             # Check if it's a list of attachments (comma-separated)
             if ',' in attachment:
                 attachment = [a.strip() for a in attachment.split(',')]  # Split and strip whitespace
@@ -493,9 +517,14 @@ class Scheduler:
         # Create a datetime object using the parsed components
         start_time = datetime(year, month, day, hour, minute)
         # Add 3 hours for the end time
-        end_time = start_time + timedelta(hours=3)
+        end_time = start_time + timedelta(hours=5)
 
-        location = 'UCL'
+        if visit_number in [1,3]:
+            location = 'Reception, 26 Bedford Way, London, WC1H 0AP'
+        elif visit_number in [2]:
+            location = 'Reception, 1-19 Torrington Place, London, WC1E 7HB'
+        else: # TODO!
+            location = 'UCL'
 
         # Generate the ICS attachment with formatted times
         cal_attachment = self.emailer.create_ics_attachment(subject, description, start_time, end_time, location)
@@ -589,21 +618,26 @@ class Scheduler:
 
     
     def main(self):
-        print("REPORT TIME:", self.date_time_now)
-        self.clear_old_backups()
-        self.backup_local_csvs()
-        changes = self.check_for_changes()
-        if not self.missing_schedule_checked:
-            self.check_missing_schedule()
-        emails_to_send_today = self.check_emails_to_send_today()
+        try:
+            print("REPORT TIME:", self.date_time_now)
+            self.clear_old_backups()
+            self.backup_local_csvs()
+            changes = self.check_for_changes()
+            if not self.missing_schedule_checked:
+                self.check_missing_schedule()
+            emails_to_send_today = self.check_emails_to_send_today()
 
-        # # NEEDS TO BE CHECKED
-        email_receipts = []
-        if not emails_to_send_today.empty:
-            email_dict = self.create_email_dict(emails_to_send_today)
-            for pid, values in email_dict.items():
-                for email_code, email_data in values.items():
-                    email_receipt = self.send_email(pid, email_data)
-                    email_receipts.append(email_receipt)
-            if email_receipts:
-                self.update_local_email_log(email_receipts)
+            # # NEEDS TO BE CHECKED
+            email_receipts = []
+            if not emails_to_send_today.empty:
+                email_dict = self.create_email_dict(emails_to_send_today)
+                for pid, values in email_dict.items():
+                    for email_code, email_data in values.items():
+                        email_receipt = self.send_email(pid, email_data)
+                        email_receipts.append(email_receipt)
+                if email_receipts:
+                    self.update_local_email_log(email_receipts)
+        except Exception as e:
+            print(f"ERROR: {e}")
+            print(f"Error in line: {sys.exc_info()[-1].tb_lineno}")
+            raise e
